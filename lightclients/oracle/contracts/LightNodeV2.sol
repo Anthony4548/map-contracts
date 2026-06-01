@@ -18,7 +18,7 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
 
     uint256 private _nodeType;
 
-    event SetMptVerify(address newMptVerify);
+    // event SetMptVerify(address newMptVerify);
     event SetNodeType(uint256 nodeType);
     event UpdateMultisig(bytes32 version, uint256 quorum, address[] signers);
     event AdminTransferred(address indexed previous, address indexed newAdmin);
@@ -39,12 +39,15 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
         _;
     }
 
-    constructor() {}
+    constructor() {
+        _disableInitializers();
+    }
 
     function initialize(uint256 _chainId, address _controller, address _mptVerify, uint256 _node) external initializer {
         require(_chainId > 0, "invalid _chainId");
         require(_controller != address(0), "_controller zero address");
         require(_mptVerify != address(0), "_mptVerify zero address");
+        require(_node == 4 || _node == 5, "LightNode: invalid node type");
         chainId = _chainId;
         mptVerify = _mptVerify;
         _nodeType = _node;
@@ -52,6 +55,7 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
     }
 
     function updateMultisig(uint256 quorum, address[] calldata signers) external onlyOwner {
+        if(quorum == 0) revert ECDSAMultisig_QuorumValueZero();
         _setQuorum(0);
         address[] memory preSigners = _signers();
         uint256 preLen = preSigners.length;
@@ -98,7 +102,7 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
     function verifyProofData(
         uint256 _logIndex,
         bytes memory _receiptProof
-    ) external view override returns (bool success, string memory message, ILightVerifier.txLog memory log) {
+    ) external view override whenNotPaused returns (bool success, string memory message, ILightVerifier.txLog memory log) {
         return _verifyProofData(_logIndex, _receiptProof);
     }
 
@@ -113,7 +117,7 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
         bool _cache,
         uint256 _logIndex,
         bytes memory _receiptProof
-    ) external override returns (bool success, string memory message, ILightVerifier.txLog memory log) {
+    ) external override whenNotPaused returns (bool success, string memory message, ILightVerifier.txLog memory log) {
         return _verifyProofData(_logIndex, _receiptProof);
     }
 
@@ -165,7 +169,7 @@ contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
     }
 
     function isVerifiable(uint256, bytes32) external view override returns (bool) {
-        return true;
+        return (_quorum() != 0 && !paused());
     }
 
     function nodeType() external view override returns (uint256) {
