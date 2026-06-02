@@ -164,7 +164,17 @@ const config: HardhatUserConfig ={
   //   currency: "USD",
   // },
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY,
+    apiKey: ' ',
+    customChains: [
+      {
+        network: "Mapo",
+        chainId: 22776,
+        urls: {
+          apiURL: "https://explorer-api.chainservice.io/api",
+          browserURL: "https://explorer.mapprotocol.io"
+        },
+      },
+    ]
   },
 };
 

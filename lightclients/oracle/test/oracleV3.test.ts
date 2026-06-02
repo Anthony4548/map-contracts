@@ -6,173 +6,119 @@ import { keccak256 } from "ethers/lib/utils";
 let chainId = 137;
 
 describe("OracleV3", function () {
-    // We define a fixture to reuse the same setup in every test.
-    // We use loadFixture to run this setup once, snapshot that state,
-    // and reset Hardhat Network to that snapshot in every test.
     async function deployFixture() {
         let [wallet] = await ethers.getSigners();
 
-        const Oracle = await ethers.getContractFactory("OracleV3");
-
+        const Oracle = await ethers.getContractFactory("contracts/v3/OracleV3.sol:OracleV3");
         const oracle = await Oracle.deploy();
-
-        await oracle.connect(wallet).deployed();
+        await oracle.deployed();
 
         const OracleProxy = await ethers.getContractFactory("OracleProxy");
-
-        let initData = Oracle.interface.encodeFunctionData("initialize", [
-            wallet.address
-        ]);
-
+        let initData = Oracle.interface.encodeFunctionData("initialize", [wallet.address]);
         const oracleProxy = await OracleProxy.deploy(oracle.address, initData);
+        await oracleProxy.deployed();
 
-        await oracleProxy.connect(wallet).deployed();
-
-        let proxy = Oracle.attach(oracleProxy.address);
-
-        return proxy;
+        return Oracle.attach(oracleProxy.address);
     }
 
     describe("Deployment", function () {
-        it("togglePause() -> reverts  only admin ", async function () {
-            let [wallet, other] = await ethers.getSigners();
-
+        it("pause() -> reverts only pauser", async function () {
+            let [, other] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
 
-            let paused = await oracle.paused();
-
-            expect(paused).to.false;
-
-            await expect(oracle.connect(other).togglePause()).to.be.reverted;
+            expect(await oracle.paused()).to.false;
+            await expect(oracle.connect(other).pause()).to.be.reverted;
         });
 
-        it("togglePause() -> correct ", async function () {
-            let [wallet, other] = await ethers.getSigners();
-
+        it("pause()/unpause() -> correct", async function () {
+            let [wallet] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
 
-            let paused = await oracle.paused();
-
-            expect(paused).to.false;
-
-            await oracle.connect(wallet).togglePause();
-
+            await oracle.connect(wallet).pause();
             expect(await oracle.paused()).to.true;
 
-            await oracle.connect(wallet).togglePause();
-
+            await oracle.connect(wallet).unpause();
             expect(await oracle.paused()).to.false;
         });
 
-        it("upgradeTo() -> reverts only Admin", async function () {
+        it("upgradeTo() -> reverts only upgrader", async function () {
             let [wallet, other] = await ethers.getSigners();
-
             let oracle = await loadFixture(deployFixture);
 
-            const Oracle = await ethers.getContractFactory("OracleV3");
+            const Oracle = await ethers.getContractFactory("contracts/v3/OracleV3.sol:OracleV3");
             const newImplement = await Oracle.connect(wallet).deploy();
             await newImplement.deployed();
 
-            await expect(oracle.connect(other).upgradeTo(newImplement.address)).to.be.reverted;
+            await expect(oracle.connect(other).upgradeTo(newImplement.address)).to.be.revertedWith("only upgrade role");
         });
 
         it("upgradeTo() -> correct", async function () {
-            let [wallet, other] = await ethers.getSigners();
-
+            let [wallet] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
 
-            const Oracle = await ethers.getContractFactory("OracleV3");
+            const Oracle = await ethers.getContractFactory("contracts/v3/OracleV3.sol:OracleV3");
             const newImplement = await Oracle.connect(wallet).deploy();
             await newImplement.deployed();
 
             let oldImplement = await oracle.getImplementation();
-
             expect(oldImplement).to.not.eq(newImplement.address);
 
             await oracle.connect(wallet).upgradeTo(newImplement.address);
-
             expect(await oracle.getImplementation()).to.eq(newImplement.address);
         });
 
-        it("updateMultisig() -> correct ", async function () {
+        it("updateMultisig() -> correct", async function () {
             let [wallet, addr1, addr2, addr3] = await ethers.getSigners();
-
             let oracle = await loadFixture(deployFixture);
 
             let signers = [addr1.address, addr2.address, addr3.address];
-
             let quorum = 4;
 
             let info = await oracle.multisigInfo();
-
-            console.log(info);
-
             expect(info.quorum).to.equal(0);
 
             await expect(oracle.updateMultisig(quorum, signers)).to.be.reverted;
 
             quorum = 3;
-
             await oracle.updateMultisig(quorum, signers);
-
             info = await oracle.multisigInfo();
-
-            console.log(info);
-
             expect(info.quorum).to.equal(3);
 
             quorum = 2;
-
             signers = [wallet.address, addr2.address, addr3.address];
-
             await oracle.updateMultisig(quorum, signers);
-
             info = await oracle.multisigInfo();
-
-            console.log(info);
-
             expect(info.quorum).to.equal(2);
         });
 
         it("proposal", async function () {
-            let [wallet, addr1, addr2, addr3] = await ethers.getSigners();
-
+            let [, addr1, addr2, addr3] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
 
             let signers = [addr1.address, addr2.address, addr3.address];
-
-            let quorum = 2;
-
-            await oracle.updateMultisig(quorum, signers);
+            await oracle.updateMultisig(2, signers);
 
             let receiptRoot = "0x9d1a63e744550eebbb4d141e5b77c13cb1c21f40fb4f124bb9f161cea166b8ff";
-
             let blockNum = 12913052;
+            let txIndex = 0;
             let logIndex = 0;
-            let transactionIndex = 0;
-            let position = await oracle.encodePosition(blockNum, transactionIndex, logIndex);
+            let position = await oracle.encodePosition(blockNum, txIndex, logIndex);
 
             let info = await oracle.multisigInfo();
-
             let hash = keccak256(
-                ethers.utils.solidityPack(
-                    ["bytes32", "bytes32", "uint256", "uint256"],
-                    [receiptRoot, info.version, position, chainId]
-                )
+                ethers.utils.solidityPack(["bytes32", "bytes32", "uint256", "uint256"], [receiptRoot, info.version, position, chainId])
             );
 
             let s1 = addr1.signMessage(ethers.utils.arrayify(hash));
-
             let s2 = addr2.signMessage(ethers.utils.arrayify(hash));
 
-            let isProposaled = await oracle["isProposed(uint256,bytes32,uint256,address)"](
+            let isProposed = await oracle["isProposed(uint256,bytes32,uint256,address)"](
                 chainId,
                 info.version,
                 position,
                 addr1.address
             );
-
-            expect(isProposaled).to.be.eq(ethers.constants.HashZero);
+            expect(isProposed).to.equal(ethers.constants.HashZero);
 
             await expect(
                 oracle.connect(addr2)["propose(uint256,uint256,bytes32,bytes)"](chainId, position, receiptRoot, s1)
@@ -180,92 +126,43 @@ describe("OracleV3", function () {
 
             await oracle.connect(addr1)["propose(uint256,uint256,bytes32,bytes)"](chainId, position, receiptRoot, s1);
 
-            await expect(
-                oracle.connect(addr1)["propose(uint256,uint256,bytes32,bytes)"](chainId, position, receiptRoot, s1)
-            ).to.be.reverted;
-
-            isProposaled = await oracle["isProposed(uint256,bytes32,uint256,address)"](
+            isProposed = await oracle["isProposed(uint256,bytes32,uint256,address)"](
                 chainId,
                 info.version,
                 position,
                 addr1.address
             );
-
-            expect(isProposaled).eq(receiptRoot);
+            expect(isProposed).to.equal(receiptRoot);
 
             await expect(
-                oracle.connect(addr2)["recoverProposal(uint256,uint256,address,uint256)"](
-                    chainId,
-                    position,
-                    addr1.address,
-                    0
-                )
+                oracle.connect(addr2)["recoverProposal(uint256,uint256,address,uint256)"](chainId, position, addr1.address, 0)
             ).to.be.reverted;
 
-            await oracle.connect(addr1)["recoverProposal(uint256,uint256,address,uint256)"](
-                chainId,
-                position,
-                addr1.address,
-                0
-            );
+            await oracle.connect(addr1)["recoverProposal(uint256,uint256,address,uint256)"](chainId, position, addr1.address, 0);
 
-            isProposaled = await oracle["isProposed(uint256,bytes32,uint256,address)"](
+            isProposed = await oracle["isProposed(uint256,bytes32,uint256,address)"](
                 chainId,
                 info.version,
                 position,
                 addr1.address
             );
-
-            expect(isProposaled).eq(ethers.constants.HashZero);
+            expect(isProposed).to.equal(ethers.constants.HashZero);
 
             await oracle.connect(addr1)["propose(uint256,uint256,bytes32,bytes)"](chainId, position, receiptRoot, s1);
 
-            isProposaled = await oracle["isProposed(uint256,bytes32,uint256,address)"](
-                chainId,
-                info.version,
-                position,
-                addr1.address
-            );
-
-            expect(isProposaled).eq(receiptRoot);
-
-            let p = await oracle["proposalInfo(uint256,uint256,bytes32,bytes32)"](
-                chainId,
-                position,
-                receiptRoot,
-                info.version
-            );
-
+            let p = await oracle["proposalInfo(uint256,uint256,bytes32,bytes32)"](chainId, position, receiptRoot, info.version);
             expect(p.canVerify).to.be.false;
 
             await expect(
                 oracle.connect(addr2)["propose(uint256,uint256,bytes32,bytes)"](chainId, position, receiptRoot, s2)
             ).to.be.emit(oracle, "Meet");
 
-            isProposaled = await oracle["isProposed(uint256,bytes32,uint256,address)"](
-                chainId,
-                info.version,
-                position,
-                addr1.address
-            );
-
-            expect(isProposaled).eq(receiptRoot);
-
-            p = await oracle["proposalInfo(uint256,uint256,bytes32,bytes32)"](
-                chainId,
-                position,
-                receiptRoot,
-                info.version
-            );
-
+            p = await oracle["proposalInfo(uint256,uint256,bytes32,bytes32)"](chainId, position, receiptRoot, info.version);
             expect(p.canVerify).to.be.true;
-
-            console.log(p);
         });
 
         it("proposal overloads -> txIndex participates in position", async function () {
-            let [wallet, addr1, addr2, addr3] = await ethers.getSigners();
-
+            let [, addr1, addr2, addr3] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
 
             await oracle.updateMultisig(2, [addr1.address, addr2.address, addr3.address]);
@@ -312,9 +209,9 @@ describe("OracleV3", function () {
         });
 
         it("proposal -> reject position greater than uint128", async function () {
-            let [wallet, addr1, addr2, addr3] = await ethers.getSigners();
-
+            let [, addr1, addr2, addr3] = await ethers.getSigners();
             let oracle = await loadFixture(deployFixture);
+
             await oracle.updateMultisig(2, [addr1.address, addr2.address, addr3.address]);
 
             let receiptRoot = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

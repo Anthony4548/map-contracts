@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@mapprotocol/protocol/contracts/interface/ILightNode.sol";
-import "./lib/Verify.sol";
+import "../lib/Verify.sol";
 
 contract LightNode is UUPSUpgradeable, Initializable, Pausable, ILightNode {
     address public mptVerify;

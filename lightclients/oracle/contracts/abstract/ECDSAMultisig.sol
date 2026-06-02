@@ -2,9 +2,9 @@
 
 pragma solidity 0.8.20;
 
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {EnumerableSet} from "../lib/EnumerableSet.sol";
-import {ECDSAMultisigStorage} from "../lib/ECDSAMultisigStorage.sol";
+import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import { MultisigEnumerableSet } from "../lib/MultisigEnumerableSet.sol";
+import { ECDSAMultisigStorage } from "../lib/ECDSAMultisigStorage.sol";
 
 /**
  * @title ECDSAMultisig
@@ -23,7 +23,7 @@ abstract contract ECDSAMultisig {
     error ECDSAMultisig_RecoveredSignerNotAuthorized();
 
     using ECDSA for bytes32;
-    using EnumerableSet for EnumerableSet.AddressSet;
+    using MultisigEnumerableSet for MultisigEnumerableSet.AddressSet;
 
     function _setQuorum(uint256 quorum) internal {
         ECDSAMultisigStorage.Layout storage l = ECDSAMultisigStorage.layout();

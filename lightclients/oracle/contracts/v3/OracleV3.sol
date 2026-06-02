@@ -3,17 +3,18 @@ pragma solidity 0.8.20;
 
 
 import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@mapprotocol/protocol/contracts/interface/ILightNode.sol";
-import "./abstract/ECDSAMultisig.sol";
+import "../abstract/ECDSAMultisig.sol";
 
-contract OracleV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, AccessControl, Pausable, ReentrancyGuard {
-
+contract OracleV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, AccessControlEnumerable, Pausable, ReentrancyGuard {
     bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+
     uint256 private constant POSITION_MASK = type(uint128).max;
     uint256 private constant BLOCK_NUM_MASK = type(uint64).max;
     uint256 private constant TX_INDEX_MASK = type(uint32).max;
@@ -50,12 +51,18 @@ contract OracleV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, AccessContro
         require(_defaultAdmin != address(0));
         _grantRole(MANAGER_ROLE, _defaultAdmin);
         _grantRole(UPGRADER_ROLE, _defaultAdmin);
+        _grantRole(PAUSER_ROLE, _defaultAdmin);
         _grantRole(DEFAULT_ADMIN_ROLE, _defaultAdmin);
     }
 
-    function togglePause() external onlyRole(MANAGER_ROLE) {
-        paused() ? _unpause() : _pause();
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
     }
+
+    function unpause() external onlyRole(MANAGER_ROLE) {
+        _unpause();
+    }
+
 
     function updateMultisig(uint256 quorum, address[] calldata signers) external onlyRole(MANAGER_ROLE) {
         if(quorum == 0) revert ECDSAMultisig_QuorumValueZero();

@@ -3,19 +3,22 @@
 pragma solidity 0.8.20;
 
 import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@mapprotocol/protocol/contracts/interface/ILightNode.sol";
-import "./abstract/ECDSAMultisig.sol";
+import "../abstract/ECDSAMultisig.sol";
 
 
-contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable, ILightNode {
-
+contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable, AccessControlEnumerable, ILightNode {
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    
     uint256 private constant POSITION_MASK = type(uint128).max;
+
     uint256 public chainId;
-
-    address private _pendingAdmin;
-
+    
     uint256 private _nodeType;
 
     error LightNodeV3_Unsupport_Type();
@@ -23,8 +26,6 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
     error LightNodeV3_Invalid_Position();
 
     event UpdateMultisig(bytes32 version, uint256 quorum, address[] signers);
-    event AdminTransferred(address indexed previous, address indexed newAdmin);
-    event ChangePendingAdmin(address indexed previousPending, address indexed newPending);
 
     enum ProofType { MPT, LOG }
 
@@ -34,27 +35,26 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
         uint256 position;
         bytes32 receiptRoot;
         bytes[] signatures;
-        bytes proof;
-    }
-
-    modifier onlyOwner() {
-        require(msg.sender == _getAdmin(), "lightnode :: only admin");
-        _;
+        bytes encodeLog;
     }
 
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(uint256 _chainId, address _controller) external initializer {
+    function initialize(uint256 _chainId, address _defaultAdmin) external initializer {
+        require(_defaultAdmin != address(0));
+        _grantRole(MANAGER_ROLE, _defaultAdmin);
+        _grantRole(UPGRADER_ROLE, _defaultAdmin);
+        _grantRole(PAUSER_ROLE, _defaultAdmin);
+        _grantRole(DEFAULT_ADMIN_ROLE, _defaultAdmin);
+
         require(_chainId > 0, "invalid _chainId");
-        require(_controller != address(0), "_controller zero address");
         chainId = _chainId;
         _nodeType = 5;
-        _changeAdmin(_controller);
     }
 
-    function updateMultisig(uint256 quorum, address[] calldata signers) external onlyOwner {
+    function updateMultisig(uint256 quorum, address[] calldata signers) external onlyRole(MANAGER_ROLE) {
         if(quorum == 0) revert ECDSAMultisig_QuorumValueZero();
         _setQuorum(0);
         address[] memory preSigners = _signers();
@@ -74,8 +74,12 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
         emit UpdateMultisig(version, quorum, signers);
     }
 
-    function togglePause() external onlyOwner {
-         paused() ? _unpause() : _pause();
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(MANAGER_ROLE) {
+        _unpause();
     }
 
     function updateBlockHeader(bytes memory _blockHeader) external override {}
@@ -98,7 +102,6 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
     ) external view override whenNotPaused returns (bool success, string memory message, bytes memory logs) {
         return _verifyProofData(_receiptProof);
     }
-
 
     function verifyProofDataWithCache(
         bool,
@@ -123,9 +126,9 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
         _validatePosition(data.position);
         _verifySignatures(data.receiptRoot, data.position, chainId, data.signatures);
         if(data.proofType != ProofType.LOG) revert LightNodeV3_Unsupport_Type();
-        if(keccak256(data.proof) == data.receiptRoot){
+        if(keccak256(data.encodeLog) == data.receiptRoot){
             success = true;
-            logs = data.proof;
+            logs = data.encodeLog;
         } else {
             success = false;
             message = "invalid event bytes";
@@ -219,27 +222,7 @@ contract LightNodeV3 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable,
 
     /** UUPS *********************************************************/
     function _authorizeUpgrade(address) internal view override {
-        require(msg.sender == _getAdmin(), "LightNode: only Admin can upgrade");
-    }
-
-    function changeAdmin() external {
-        require(_pendingAdmin == msg.sender, "only pendingAdmin");
-        emit AdminTransferred(_getAdmin(), _pendingAdmin);
-        _changeAdmin(_pendingAdmin);
-    }
-
-    function pendingAdmin() external view returns (address) {
-        return _pendingAdmin;
-    }
-
-    function setPendingAdmin(address pendingAdmin_) external onlyOwner {
-        require(pendingAdmin_ != address(0), "Ownable: pendingAdmin is the zero address");
-        emit ChangePendingAdmin(_pendingAdmin, pendingAdmin_);
-        _pendingAdmin = pendingAdmin_;
-    }
-
-    function getAdmin() external view returns (address) {
-        return _getAdmin();
+        require(hasRole(UPGRADER_ROLE, msg.sender), "only upgrade role");
     }
 
     function getImplementation() external view returns (address) {

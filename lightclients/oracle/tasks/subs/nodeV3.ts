@@ -1,6 +1,6 @@
 import { task } from "hardhat/config";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
-import { create, readFromFile, writeToFile } from "../../utils/helper";
+import { create, readFromFile, writeToFile, verify } from "../../utils/helper";
 import { getSigInfo, compare } from "../MultsigUtils";
 
 task("nodeV3:deploy", "deploy oracle light node v3")
@@ -14,7 +14,7 @@ task("nodeV3:deploy", "deploy oracle light node v3")
 
         let salt = taskArgs.salt;
         let impl = taskArgs.impl;
-        let LightNode = await hre.ethers.getContractFactory("LightNodeV3");
+        let LightNode = await hre.ethers.getContractFactory("contracts/v3/LightNodeV3.sol:LightNodeV3");
 
         let node;
         console.log("wallet address is:", wallet.address);
@@ -23,7 +23,7 @@ task("nodeV3:deploy", "deploy oracle light node v3")
                 from: wallet.address,
                 args: [],
                 log: true,
-                contract: "LightNodeV3",
+                contract: "contracts/v3/LightNodeV3.sol:LightNodeV3",
             });
             impl = implDeploy.address;
         }
@@ -54,6 +54,20 @@ task("nodeV3:deploy", "deploy oracle light node v3")
         d.networks[network.name].lightNodes[taskArgs.chain].proxy = node;
         d.networks[network.name].lightNodes[taskArgs.chain].impl = impl;
         await writeToFile(d);
+
+        try {
+            await verify(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre.run);
+            console.log("verified lightnode impl:", impl);
+        } catch (error) {
+            console.log("verify lightnode impl failed:", error);
+        }
+
+        try {
+            await verify(node, [impl, implParam], "contracts/LightNodeProxy.sol:LightNodeProxy", hre.run);
+            console.log("verified lightnode proxy:", node);
+        } catch (error) {
+            console.log("verify lightnode proxy failed:", error);
+        }
     });
 
 task("nodeV3:upgrade", "upgrade oracle light node v3")
@@ -94,16 +108,30 @@ task("nodeV3:upgrade", "upgrade oracle light node v3")
                 from: wallet.address,
                 args: [],
                 log: true,
-                contract: "LightNodeV3",
+                contract: "contracts/v3/LightNodeV3.sol:LightNodeV3",
             });
             impl = deployed.address;
+
+            try {
+                await verify(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre.run);
+                console.log("verified lightnode impl:", impl);
+            } catch (error) {
+                console.log("verify lightnode impl failed:", error);
+            }
         }
 
-        const LightNode = await hre.ethers.getContractFactory("LightNodeV3");
+        const LightNode = await hre.ethers.getContractFactory("contracts/v3/LightNodeV3.sol:LightNodeV3");
         let proxy = LightNode.attach(node);
         console.log("old impl :", await proxy.getImplementation());
         await (await proxy.upgradeTo(impl)).wait();
         console.log("new impl :", await proxy.getImplementation());
+
+        try {
+            await verify(node, [impl, "0x"], "contracts/LightNodeProxy.sol:LightNodeProxy", hre.run);
+            console.log("verify lightnode proxy attempt finished:", node);
+        } catch (error) {
+            console.log("verify lightnode proxy failed:", error);
+        }
 
         d.networks[network.name].lightNodes[chain].impl = impl;
         await writeToFile(d);
@@ -138,7 +166,7 @@ task("nodeV3:updateMultisig", "update multi sign address for light node v3")
         }
         console.log("light node address:", node);
 
-        const LightNode = await hre.ethers.getContractFactory("LightNodeV3");
+        const LightNode = await hre.ethers.getContractFactory("contracts/v3/LightNodeV3.sol:LightNodeV3");
         let proxy = LightNode.attach(node);
 
         let oldInfo = await proxy.multisigInfo();
@@ -149,5 +177,61 @@ task("nodeV3:updateMultisig", "update multi sign address for light node v3")
             console.log("Multisg already set");
         } else {
             await (await proxy.updateMultisig(sig.quorum, sig.signers)).wait();
+        }
+    });
+
+task("nodeV3:grantRole", "grant or revoke role for light node v3")
+    .addParam("role", "role name: upgrade | manager | pauser")
+    .addParam("account", "account address")
+    .addOptionalParam("grant", "grant or revoke", true, types.boolean)
+    .addOptionalParam("chain", "chainId", 0, types.int)
+    .addOptionalParam("node", "light node address", "node", types.string)
+    .setAction(async (taskArgs, hre: HardhatRuntimeEnvironment) => {
+        let [wallet] = await hre.ethers.getSigners();
+        const { network } = hre;
+
+        let d = await readFromFile(network.name);
+        let chain = taskArgs.chain;
+        if (chain == 0) {
+            chain = Object.keys(d.networks[network.name].lightNodes)[0];
+        }
+
+        let node = taskArgs.node;
+        if (node === "node") {
+            if (!d.networks[network.name].lightNodes[chain]) {
+                throw "oracle light node not deploy";
+            }
+            if (
+                d.networks[network.name].lightNodes[chain].proxy === undefined ||
+                d.networks[network.name].lightNodes[chain].proxy === ""
+            ) {
+                throw "oracle light node not deploy";
+            }
+            node = d.networks[network.name].lightNodes[chain].proxy;
+        }
+
+        console.log("light node address:", node);
+        console.log("wallet address is:", wallet.address);
+
+        const LightNode = await hre.ethers.getContractFactory("contracts/v3/LightNodeV3.sol:LightNodeV3");
+        let lightNode = LightNode.attach(node);
+
+        let role;
+        if (taskArgs.role === "upgrade" || taskArgs.role === "upgrader") {
+            role = await lightNode.UPGRADER_ROLE();
+        } else if (taskArgs.role === "manage" || taskArgs.role === "manager") {
+            role = await lightNode.MANAGER_ROLE();
+        } else if (taskArgs.role === "pause" || taskArgs.role === "pauser") {
+            role = await lightNode.PAUSER_ROLE();
+        } else {
+            role = hre.ethers.constants.HashZero;
+        }
+
+        if (taskArgs.grant) {
+            await (await lightNode.grantRole(role, taskArgs.account)).wait();
+            console.log(`grant ${taskArgs.account} role ${role}`);
+        } else {
+            await (await lightNode.revokeRole(role, taskArgs.account)).wait();
+            console.log(`revoke ${taskArgs.account} role ${role}`);
         }
     });

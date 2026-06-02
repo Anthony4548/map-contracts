@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@mapprotocol/protocol/contracts/interface/ILightNode.sol";
-import "./abstract/ECDSAMultisig.sol";
+import "../abstract/ECDSAMultisig.sol";
 
 contract OracleV2 is ECDSAMultisig, Ownable, Pausable, ReentrancyGuard {
     struct LightNodeInfo {

@@ -6,8 +6,8 @@ import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@mapprotocol/protocol/contracts/interface/ILightNode.sol";
-import "./abstract/ECDSAMultisig.sol";
-import "./lib/Verify.sol";
+import "../abstract/ECDSAMultisig.sol";
+import "../lib/Verify.sol";
 
 contract LightNodeV2 is ECDSAMultisig, UUPSUpgradeable, Initializable, Pausable, ILightNode {
     address public mptVerify;
