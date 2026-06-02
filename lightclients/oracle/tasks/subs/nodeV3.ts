@@ -1,6 +1,6 @@
-import { task } from "hardhat/config";
+import { task, types } from "hardhat/config";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
-import { create, readFromFile, writeToFile, verify } from "../../utils/helper";
+import { create, getCreateAddress, readFromFile, writeToFile, verifyWithFallback } from "../../utils/helper";
 import { getSigInfo, compare } from "../MultsigUtils";
 
 task("nodeV3:deploy", "deploy oracle light node v3")
@@ -17,32 +17,47 @@ task("nodeV3:deploy", "deploy oracle light node v3")
         let LightNode = await hre.ethers.getContractFactory("contracts/v3/LightNodeV3.sol:LightNodeV3");
 
         let node;
+        let proxyDeployed = true;
         console.log("wallet address is:", wallet.address);
+        if (salt !== "") {
+            const created = await getCreateAddress(salt, hre.ethers);
+            node = created.address;
+            const proxyExists = (await hre.ethers.provider.getCode(node)) !== "0x";
+            if (proxyExists) {
+                proxyDeployed = false;
+            }
+        }
         if (impl === "") {
-            let implDeploy = await deploy("LightNodeV3", {
-                from: wallet.address,
-                args: [],
-                log: true,
-                contract: "contracts/v3/LightNodeV3.sol:LightNodeV3",
-            });
-            impl = implDeploy.address;
+            if (proxyDeployed) {
+                let implDeploy = await deploy(`LightNodeV3_${taskArgs.chain}`, {
+                    from: wallet.address,
+                    args: [],
+                    log: true,
+                    contract: "contracts/v3/LightNodeV3.sol:LightNodeV3",
+                });
+                impl = implDeploy.address;
+            } else {
+                impl = "";
+            }
         }
         console.log("impl address :", impl);
 
         let implParam = LightNode.interface.encodeFunctionData("initialize", [taskArgs.chain, wallet.address]);
         if (salt === "") {
-            let result = await deploy("LightNodeProxy", {
+            let result = await deploy(`LightNodeProxy_${taskArgs.chain}`, {
                 from: wallet.address,
                 args: [impl, implParam],
                 log: true,
                 contract: "LightNodeProxy",
             });
             node = result.address;
-        } else {
+            proxyDeployed = result.newlyDeployed;
+        } else if (proxyDeployed) {
             let param = hre.ethers.utils.defaultAbiCoder.encode(["address", "bytes"], [impl, implParam]);
             let LightNodeProxy = await hre.ethers.getContractFactory("LightNodeProxy");
             let result = await create(salt, LightNodeProxy.bytecode, param, hre.ethers);
             node = result[0];
+            proxyDeployed = result[1];
         }
 
         console.log("node address :", node);
@@ -52,21 +67,29 @@ task("nodeV3:deploy", "deploy oracle light node v3")
         }
 
         d.networks[network.name].lightNodes[taskArgs.chain].proxy = node;
-        d.networks[network.name].lightNodes[taskArgs.chain].impl = impl;
+        if (impl !== "" && proxyDeployed) {
+            d.networks[network.name].lightNodes[taskArgs.chain].impl = impl;
+        }
         await writeToFile(d);
 
-        try {
-            await verify(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre.run);
-            console.log("verified lightnode impl:", impl);
-        } catch (error) {
-            console.log("verify lightnode impl failed:", error);
+        if (impl !== "" && proxyDeployed) {
+            try {
+                await verifyWithFallback(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre);
+                console.log("verified lightnode impl:", impl);
+            } catch (error) {
+                console.log("verify lightnode impl failed:", error);
+            }
         }
 
-        try {
-            await verify(node, [impl, implParam], "contracts/LightNodeProxy.sol:LightNodeProxy", hre.run);
-            console.log("verified lightnode proxy:", node);
-        } catch (error) {
-            console.log("verify lightnode proxy failed:", error);
+        if (proxyDeployed) {
+            try {
+                await verifyWithFallback(node, [impl, implParam], "contracts/LightNodeProxy.sol:LightNodeProxy", hre);
+                console.log("verified lightnode proxy:", node);
+            } catch (error) {
+                console.log("verify lightnode proxy failed:", error);
+            }
+        } else {
+            console.log("skip lightnode proxy deploy and verify: address already had code, please change salt if you want a new light node proxy");
         }
     });
 
@@ -113,7 +136,7 @@ task("nodeV3:upgrade", "upgrade oracle light node v3")
             impl = deployed.address;
 
             try {
-                await verify(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre.run);
+                await verifyWithFallback(impl, [], "contracts/v3/LightNodeV3.sol:LightNodeV3", hre);
                 console.log("verified lightnode impl:", impl);
             } catch (error) {
                 console.log("verify lightnode impl failed:", error);
@@ -125,13 +148,6 @@ task("nodeV3:upgrade", "upgrade oracle light node v3")
         console.log("old impl :", await proxy.getImplementation());
         await (await proxy.upgradeTo(impl)).wait();
         console.log("new impl :", await proxy.getImplementation());
-
-        try {
-            await verify(node, [impl, "0x"], "contracts/LightNodeProxy.sol:LightNodeProxy", hre.run);
-            console.log("verify lightnode proxy attempt finished:", node);
-        } catch (error) {
-            console.log("verify lightnode proxy failed:", error);
-        }
 
         d.networks[network.name].lightNodes[chain].impl = impl;
         await writeToFile(d);

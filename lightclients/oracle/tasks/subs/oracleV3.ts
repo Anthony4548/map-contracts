@@ -1,45 +1,65 @@
-import { task } from "hardhat/config";
+import { task, types } from "hardhat/config";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
-import { getSigInfo, compare, Multisig } from "../MultsigUtils";
-import { create, readFromFile, writeToFile, verify } from "../../utils/helper";
+import { getSigInfo, compare } from "../MultsigUtils";
+import { create, getCreateAddress, readFromFile, writeToFile, verifyWithFallback } from "../../utils/helper";
 
 task("oracleV3:deploy", "deploy oracle")
     .addOptionalParam("salt", "oracle salt", "", types.string)
     .setAction(async (taskArgs, hre: HardhatRuntimeEnvironment) => {
         let [wallet] = await hre.ethers.getSigners();
-        const { deployments, network } = hre;
-        const { deploy } = deployments;
+        const { network } = hre;
         let salt = taskArgs.salt;
         console.log("wallet address is:", wallet.address);
-        let Oracle = await hre.ethers.getContractFactory("contracts/v3/OracleV3.sol:OracleV3");
-        let impl = await Oracle.deploy();
-        await impl.deployed();
-
+        const Oracle = await hre.ethers.getContractFactory("contracts/v3/OracleV3.sol:OracleV3");
         let OracleProxy = await hre.ethers.getContractFactory("OracleProxy");
-        let impl_param = Oracle.interface.encodeFunctionData("initialize", [
-            wallet.address
-        ]);
-        let param = hre.ethers.utils.defaultAbiCoder.encode(["address", "bytes"], [impl.address, impl_param]);
-        let result = await create(salt, OracleProxy.bytecode, param, hre.ethers);
-        let oracle = result[0];
-        console.log("oracle deploy to :", oracle);
-        const verifyArgs = [wallet.address];
+        let implParam = Oracle.interface.encodeFunctionData("initialize", [wallet.address]);
+        let addr;
+        let proxyDeployed = true;
+        let impl;
+        if (!salt || salt === "") { 
+            impl = await Oracle.deploy();
+            await impl.deployed();
+            let proxy = await OracleProxy.deploy(impl.address, implParam);
+            await proxy.deployed();
+            addr = proxy.address;
+        } else {
+            const created = await getCreateAddress(salt, hre.ethers);
+            addr = created.address;
+            const proxyExists = (await hre.ethers.provider.getCode(addr)) !== "0x";
+            if (proxyExists) {
+                proxyDeployed = false;
+            } else {
+                impl = await Oracle.deploy();
+                await impl.deployed();
+                let param = hre.ethers.utils.defaultAbiCoder.encode(["address", "bytes"], [impl.address, implParam]);
+                let result = await create(salt, OracleProxy.bytecode, param, hre.ethers);
+                addr = result[0];
+                proxyDeployed = result[1];
+            }
+        }
+        console.log("oracle deploy to :", addr);
         let d = await readFromFile(hre.network.name);
-        d.networks[network.name].oracle = oracle;
+        d.networks[network.name].oracle = addr;
         await writeToFile(d);
 
-        try {
-            await verify(impl.address, [], "contracts/v3/OracleV3.sol:OracleV3", hre.run);
-            console.log("verified oracle impl:", impl.address);
-        } catch (error) {
-            console.log("verify oracle impl failed:", error);
+        if (impl) {
+            try {
+                await verifyWithFallback(impl.address, [], "contracts/v3/OracleV3.sol:OracleV3", hre);
+                console.log("verified oracle impl:", impl.address);
+            } catch (error) {
+                console.log("verify oracle impl failed:", error);
+            }
         }
 
-        try {
-            await verify(oracle, [impl.address, impl_param], "contracts/OracleProxy.sol:OracleProxy", hre.run);
-            console.log("verified oracle proxy:", oracle);
-        } catch (error) {
-            console.log("verify oracle proxy failed:", error);
+        if (proxyDeployed) {
+            try {
+                await verifyWithFallback(addr, [impl.address, implParam], "contracts/OracleProxy.sol:OracleProxy", hre);
+                console.log("verified oracle proxy:", addr);
+            } catch (error) {
+                console.log("verify oracle proxy failed:", error);
+            }
+        } else {
+            console.log("skip oracle proxy deploy and verify: address already had code, please change salt if you want a new oracle proxy");
         }
     });
 
@@ -73,7 +93,7 @@ task("oracleV3:upgrade", "deploy oracle")
             impl = deployed.address;
 
             try {
-                await verify(impl, [], "contracts/v3/OracleV3.sol:OracleV3", hre.run);
+                await verifyWithFallback(impl, [], "contracts/v3/OracleV3.sol:OracleV3", hre);
                 console.log("verified oracle impl:", impl);
             } catch (error) {
                 console.log("verify oracle impl failed:", error);
@@ -84,13 +104,6 @@ task("oracleV3:upgrade", "deploy oracle")
         console.log("old impl :", await oracle.getImplementation());
         await (await oracle.upgradeTo(impl)).wait();
         console.log("new impl :", await oracle.getImplementation());
-
-        try {
-            await verify(oracleAddr, [impl, "0x"], "contracts/OracleProxy.sol:OracleProxy", hre.run);
-            console.log("verify oracle proxy attempt finished:", oracleAddr);
-        } catch (error) {
-            console.log("verify oracle proxy failed:", error);
-        }
         d.networks[network.name].oracle = oracleAddr;
         await writeToFile(d);
     });
@@ -159,7 +172,15 @@ task("oracleV3:removeProposal", "remove oracle proposal")
             }
             position = await oracle.encodePosition(taskArgs.block, taskArgs.txIndex, taskArgs.logIndex);
         }
-        let rst = await oracle.recoverProposal(taskArgs.chainid, position, taskArgs.signer, taskArgs.index);
+        if (taskArgs.chainid === "" || taskArgs.signer === "" || taskArgs.index === "") {
+            throw "need chainid + signer + index";
+        }
+        await (await oracle["recoverProposal(uint256,uint256,address,uint256)"](
+            taskArgs.chainid,
+            position,
+            taskArgs.signer,
+            taskArgs.index
+        )).wait();
     });
 
 task("oracleV3:grantRole", "set token outFee")
@@ -199,7 +220,7 @@ task("oracleV3:grantRole", "set token outFee")
             await (await oracle.grantRole(role, taskArgs.account)).wait();
             console.log(`grant ${taskArgs.account} role ${role}`);
         } else {
-            await oracle.revokeRole(role, taskArgs.account);
+            await (await oracle.revokeRole(role, taskArgs.account)).wait();
             console.log(`revoke ${taskArgs.account} role ${role}`);
         }
     });
